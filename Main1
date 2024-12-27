@@ -1,0 +1,374 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, FlatList, Button, Alert, TextInput, ActivityIndicator } from 'react-native';
+import axios from 'axios';
+import debounce from 'lodash.debounce';
+import AgoraRTC from 'agora-rtc-sdk-ng';
+import { useStripe, CardField } from '@stripe/stripe-react-native';
+
+const RoleBasedDashboard = ({ userRole }) => {
+  switch (userRole) {
+    case 'patient':
+      return (
+        <View>
+          <Text>Welcome, Patient!</Text>
+          <Button title="Schedule Appointment" onPress={() => {/* Navigate to AppointmentBooking */}} />
+          <Button title="Access Training Plans" onPress={() => {/* Navigate to Training Plans */}} />
+          <Button title="Telehealth Consultation" onPress={() => {/* Navigate to Telehealth */}} />
+          <Button title="View Health Records" onPress={() => {/* Navigate to Health Records */}} />
+        </View>
+      );
+
+    case 'non-patient':
+      return (
+        <View>
+          <Text>Welcome, Wellness Enthusiast!</Text>
+          <Button title="Access Training Programs" onPress={() => {/* Navigate to Training Programs */}} />
+          <Button title="Track Progress" onPress={() => {/* Navigate to Progress Tracker */}} />
+          <Button title="Preventive Protocols" onPress={() => {/* Navigate to Protocols */}} />
+        </View>
+      );
+
+    case 'doctor':
+      return (
+        <View>
+          <Text>Welcome, Doctor!</Text>
+          <Button title="Manage Patient Data" onPress={() => {/* Navigate to Patient Management */}} />
+          <Button title="Conduct Telehealth" onPress={() => {/* Navigate to Telehealth */}} />
+          <Button title="View Analytics and Reports" onPress={() => {/* Navigate to Analytics */}} />
+        </View>
+      );
+
+    case 'trainer':
+      return (
+        <View>
+          <Text>Welcome, Trainer!</Text>
+          <Button title="Administer Training Goals" onPress={() => {/* Navigate to Training Goals */}} />
+          <Button title="Coordinate with Professionals" onPress={() => {/* Navigate to Coordination */}} />
+        </View>
+      );
+
+    case 'admin':
+      return (
+        <View>
+          <Text>Welcome, Admin!</Text>
+          <Button title="Manage User Roles" onPress={() => {/* Navigate to Role Management */}} />
+          <Button title="Monitor Platform Usage" onPress={() => {/* Navigate to Monitoring */}} />
+        </View>
+      );
+
+    case 'super-admin':
+      return (
+        <View>
+          <Text>Welcome, Super Admin!</Text>
+          <Button title="Full System Access" onPress={() => {/* Navigate to Full Access Panel */}} />
+          <Button title="Troubleshoot System" onPress={() => {/* Navigate to Troubleshooting */}} />
+        </View>
+      );
+
+    case 'any':
+      return (
+        <View>
+          <Text>Welcome, User!</Text>
+          <Button title="Search for Chairs" onPress={() => {/* Navigate to Chair Search */}} />
+          <Button title="Book Appointments" onPress={() => {/* Navigate to Booking */}} />
+          <Button title="Make Prepayments" onPress={() => {/* Navigate to Payments */}} />
+        </View>
+      );
+
+    default:
+      return (
+        <View>
+          <Text>Welcome! Please select a role.</Text>
+        </View>
+      );
+  }
+};
+
+const AppointmentBooking = ({ userRole }) => {
+  const [slots, setSlots] = useState([]);
+  const [location, setLocation] = useState('');
+  const [type, setType] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [cardDetails, setCardDetails] = useState(null);
+  const stripe = useStripe();
+
+  const fetchSlots = debounce(async () => {
+    if (location && type) {
+      try {
+        setLoading(true);
+        const response = await axios.get(
+          `https://api.pontemed.com/appointments/slots`,
+          {
+            params: { location, type },
+          }
+        );
+        setSlots(response.data);
+      } catch (error) {
+        Alert.alert('Error', error.response?.data?.message || 'Failed to fetch slots.');
+      } finally {
+        setLoading(false);
+      }
+    }
+  }, 500);
+
+  useEffect(() => {
+    fetchSlots();
+  }, [location, type]);
+
+  const bookSlot = async (slotId, amount, currency) => {
+    try {
+      // Create a payment intent
+      const paymentIntentResponse = await axios.post('https://api.pontemed.com/payments/create-intent', {
+        amount,
+        currency,
+        appointmentId: slotId,
+      });
+
+      const { clientSecret } = paymentIntentResponse.data;
+
+      // Confirm payment using Stripe with card details
+      const { paymentIntent, error } = await stripe.confirmPayment(clientSecret, {
+        paymentMethodType: 'Card',
+        paymentMethodData: { card: cardDetails },
+      });
+
+      if (error) {
+        Alert.alert('Payment Failed', error.message);
+        return;
+      }
+
+      if (paymentIntent.status === 'Succeeded') {
+        // Confirm booking after successful payment
+        await axios.post('https://api.pontemed.com/appointments/book', { slotId });
+        Alert.alert('Booking Successful', 'Your payment and booking are confirmed.');
+
+        // Schedule a reminder for the appointment
+        await scheduleReminder(slotId);
+      }
+    } catch (error) {
+      Alert.alert('Booking Failed', error.response?.data?.message || 'Failed to book the slot.');
+    }
+  };
+
+  const cancelAppointment = async (appointmentId) => {
+    try {
+      const response = await axios.post('https://api.pontemed.com/appointments/cancel', { appointmentId });
+      Alert.alert('Cancellation Successful', response.data.message);
+    } catch (error) {
+      Alert.alert('Cancellation Failed', error.response?.data?.message || 'Failed to cancel the appointment.');
+    }
+  };
+
+  return (
+    <View>
+      <RoleBasedDashboard userRole={userRole} />
+      <Text>Select Location</Text>
+      <TextInput
+        placeholder="Location"
+        value={location}
+        onChangeText={setLocation}
+        style={{ borderBottomWidth: 1, marginBottom: 10 }}
+      />
+      <Text>Select Type (GYM, SPA, CLINIC)</Text>
+      <TextInput
+        placeholder="Type"
+        value={type}
+        onChangeText={setType}
+        style={{ borderBottomWidth: 1, marginBottom: 10 }}
+      />
+      <CardField
+        postalCodeEnabled={true}
+        placeholder={{
+          number: '4242 4242 4242 4242',
+        }}
+        cardStyle={{
+          backgroundColor: '#FFFFFF',
+          textColor: '#000000',
+        }}
+        style={{
+          height: 50,
+          marginVertical: 30,
+        }}
+        onCardChange={(cardDetails) => setCardDetails(cardDetails)}
+      />
+      {loading ? (
+        <ActivityIndicator size="large" color="#0000ff" />
+      ) : (
+        <FlatList
+          data={slots}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => (
+            <View>
+              <Text>{item.date} - {item.time}</Text>
+              <Text>Location: {item.location}</Text>
+              <Text>Type: {item.type}</Text>
+              <Button title="Book" onPress={() => bookSlot(item.id, 5000, 'usd')} />
+              <Button title="Cancel" onPress={() => cancelAppointment(item.id)} />
+            </View>
+          )}
+        />
+      )}
+    </View>
+  );
+};
+
+const scheduleReminder = async (appointmentId) => {
+  try {
+    const response = await axios.post('https://api.pontemed.com/reminders/schedule', { appointmentId });
+    console.log('Reminder Scheduled:', response.data);
+  } catch (error) {
+    console.error('Failed to Schedule Reminder:', error.response?.data || error.message);
+  }
+};
+
+const AgoraCall = ({ appId, token, channelName, uid, userRole }) => {
+  const client = useRef(null);
+  const localAudioTrack = useRef(null);
+  const localVideoTrack = useRef(null);
+  const [sessionTimer, setSessionTimer] = useState(0);
+  const timerInterval = useRef(null);
+
+  const joinChannel = async () => {
+    client.current = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
+
+    client.current.on("user-published", async (user, mediaType) => {
+      await client.current.subscribe(user, mediaType);
+
+      if (mediaType === "video") {
+        const remoteVideoTrack = user.videoTrack;
+        remoteVideoTrack.play("remote-player");
+      }
+    });
+
+    await client.current.join(appId, channelName, token, uid);
+
+    localAudioTrack.current = await AgoraRTC.createMicrophoneAudioTrack();
+    localVideoTrack.current = await AgoraRTC.createCameraVideoTrack();
+
+    await client.current.publish([localAudioTrack.current, localVideoTrack.current]);
+
+    // Start the session timer
+    timerInterval.current = setInterval(() => {
+      setSessionTimer((prev) => prev + 1);
+    }, 1000);
+  };
+
+  const leaveChannel = async () => {
+    localAudioTrack.current.close();
+    localVideoTrack.current.close();
+    await client.current.leave();
+
+    // Stop the session timer
+    clearInterval(timerInterval.current);
+  };
+
+  return (
+    <View>
+      <RoleBasedDashboard userRole={userRole} />
+      <Text>Agora Video Call</Text>
+      <Text>Session Timer: {Math.floor(sessionTimer / 60)}:{sessionTimer % 60}</Text>
+      <Button title="Join Call" onPress={joinChannel} />
+      <Button title="Leave Call" onPress={leaveChannel} />
+      <div id="remote-player" style={{ width: "100%", height: "300px" }}></div>
+    </View>
+  );
+};
+
+const mongoose = require('mongoose');
+
+const AppointmentSchema = new mongoose.Schema({
+  date: { type: Date, required: true },
+  time: { type: String, required: true },
+  location: { type: String, required: true },
+  type: { type: String, enum: ['GYM', 'SPA', 'CLINIC'], required: true },
+  isBooked: { type: Boolean, default: false },
+  bookedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  paymentIntentId: { type: String, default: null },
+});
+
+const Appointment = mongoose.model('Appointment', AppointmentSchema);
+
+const UserSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, unique: true, required: true },
+  phone: { type: String, unique: true },
+  appointments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' }],
+  devices: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Device' }],
+});
+
+const User = mongoose.model('User', UserSchema);
+
+const DeviceSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  status: { type: String, enum: ['connected', 'in-use', 'available'], default: 'available' },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  sessionType: { type: String, enum: ['training', 'treatment'], default: null },
+});
+
+const Device = mongoose.model('Device', DeviceSchema);
+
+const ReminderSchema = new mongoose.Schema({
+  appointmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', required: true },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  scheduleTime: { type: Date, required: true },
+  status: { type: String, enum: ['scheduled', 'completed'], default: 'scheduled' },
+});
+
+const Reminder = mongoose.model('Reminder', ReminderSchema);
+
+const SessionLogSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  deviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Device', required: true },
+  sessionType: { type: String, required: true },
+  timestamp: { type: Date, default: Date.now },
+});
+
+const SessionLog = mongoose.model('SessionLog', SessionLogSchema);
+
+const cancelAppointment = async (req, res) => {
+  const { appointmentId } = req.body;
+  try {
+    const appointment = await Appointment.findById(appointmentId);
+    if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
+
+    if (appointment.isBooked) {
+      const refund = await axios.post('https://api.pontemed.com/refunds', {
+        paymentIntentId: appointment.paymentIntentId,
+      });
+
+      appointment.isBooked = false;
+      appointment.bookedBy = null;
+      appointment.paymentIntentId = null;
+      await appointment.save();
+
+      return res.status(200).json({ message: 'Appointment canceled and refunded if applicable.' });
+    } else {
+      return res.status(400).json({ error: 'No booking found for this appointment.' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+const validateInsurance = (details) => {
+  if (!details.policyNumber || !details.expiryDate || new Date(details.expiryDate) < new Date()) {
+    return false;
+  }
+  return true;
+};
+
+const processInsuranceClaim = async (req, res) => {
+  const { appointmentId, insuranceDetails } = req.body;
+  try {
+    const appointment = await Appointment.findById(appointmentId);
+    if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
+
+    const claimApproved = validateInsurance(insuranceDetails);
+    if (!claimApproved) return res.status(400).json({ error: 'Insurance claim denied. Invalid or expired policy.' });
+
+    appointment.isPaid = true;
+    await appointment.save();
+
+    res.status(200).json({ message: 'Insurance claim approved and appointment confirmed' });
+  } catch (error) {
+    res.status(500).json({ error: error.message
