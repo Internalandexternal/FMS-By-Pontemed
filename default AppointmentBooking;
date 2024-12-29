@@ -1,0 +1,175 @@
+export const addToGoogleCalendar = ({ date, time, location }) => {
+  const appointmentTime = new Date(`${date}T${time}`);
+  const formattedTime = appointmentTime.toISOString().replace(/-|:|\.\d+/g, '');
+  const googleUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=Appointment&dates=${formattedTime}/${formattedTime}&details=Location:${location}`;
+  window.open(googleUrl, '_blank');
+};
+
+export const addToOutlookCalendar = ({ date, time, location }) => {
+  const appointmentTime = new Date(`${date}T${time}`);
+  const outlookUrl = `https://outlook.live.com/calendar/0/deeplink/compose?path=/calendar/action/compose&rru=addevent&startdt=${appointmentTime.toISOString()}&enddt=${appointmentTime.toISOString()}&subject=Appointment&body=Location:${location}`;
+  window.open(outlookUrl, '_blank');
+};
+
+export const addToICal = ({ date, time, location }) => {
+  const appointmentTime = new Date(`${date}T${time}`);
+  const formattedTime = appointmentTime.toISOString().replace(/-|:|\.\d+/g, '');
+  const icalEvent = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:${formattedTime}\nDTEND:${formattedTime}\nSUMMARY:Appointment\nDESCRIPTION:Location:${location}\nEND:VEVENT\nEND:VCALENDAR`;
+  const blob = new Blob([icalEvent], { type: 'text/calendar' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'appointment.ics';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+};
+
+
+import { addToGoogleCalendar, addToOutlookCalendar, addToICal } from './CalendarIntegration';
+
+const addToCalendar = (calendarType, appointmentDetails) => {
+  const { date, time, location } = appointmentDetails;
+
+  switch (calendarType) {
+    case 'google':
+      addToGoogleCalendar({ date, time, location });
+      break;
+    case 'outlook':
+      addToOutlookCalendar({ date, time, location });
+      break;
+    case 'ical':
+      addToICal({ date, time, location });
+      break;
+    default:
+      Alert.alert('Error', 'Unsupported calendar type.');
+  }
+};
+
+import React, { useState, useEffect } from 'react';
+import { View, Text, TextInput, Button, Picker, FlatList, Alert, ActivityIndicator } from 'react-native';
+import axios from 'axios';
+import debounce from 'lodash.debounce';
+import { useStripe, CardField } from '@stripe/stripe-react-native';
+import { addToGoogleCalendar, addToOutlookCalendar, addToICal } from './CalendarIntegration';
+
+const AppointmentBooking = () => {
+  const [slots, setSlots] = useState([]);
+  const [location, setLocation] = useState('');
+  const [type, setType] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [calendarOption, setCalendarOption] = useState('google');
+  const [cardDetails, setCardDetails] = useState(null);
+  const stripe = useStripe();
+
+  const fetchSlots = debounce(async () => {
+    if (location && type) {
+      try {
+        setLoading(true);
+        const response = await axios.get('https://api.pontemed.com/appointments/slots', {
+          params: { location, type },
+        });
+        setSlots(response.data);
+      } catch (error) {
+        Alert.alert('Error', 'Failed to fetch slots.');
+      } finally {
+        setLoading(false);
+      }
+    }
+  }, 500);
+
+  useEffect(() => {
+    fetchSlots();
+  }, [location, type]);
+
+  const bookSlot = async (slotId, amount, currency) => {
+    try {
+      const paymentIntentResponse = await axios.post('https://api.pontemed.com/payments/create-intent', {
+        amount,
+        currency,
+        appointmentId: slotId,
+      });
+
+      const { clientSecret } = paymentIntentResponse.data;
+
+      const { paymentIntent, error } = await stripe.confirmPayment(clientSecret, {
+        paymentMethodType: 'Card',
+        paymentMethodData: { card: cardDetails },
+      });
+
+      if (error) {
+        Alert.alert('Payment Failed', error.message);
+        return;
+      }
+
+      if (paymentIntent.status === 'Succeeded') {
+        await axios.post('https://api.pontemed.com/appointments/book', { slotId });
+        Alert.alert('Booking Successful', 'Your payment and booking are confirmed.');
+
+        // Add to the selected calendar
+        const appointmentDetails = slots.find((slot) => slot.id === slotId);
+        addToCalendar(calendarOption, appointmentDetails);
+      }
+    } catch (error) {
+      Alert.alert('Booking Failed', 'Failed to book the slot.');
+    }
+  };
+
+  return (
+    <View>
+      <Text>Select Location</Text>
+      <TextInput
+        placeholder="Location"
+        value={location}
+        onChangeText={setLocation}
+        style={{ borderBottomWidth: 1, marginBottom: 10 }}
+      />
+      <Text>Select Type (GYM, SPA, CLINIC)</Text>
+      <TextInput
+        placeholder="Type"
+        value={type}
+        onChangeText={setType}
+        style={{ borderBottomWidth: 1, marginBottom: 10 }}
+      />
+      <Text>Select Calendar</Text>
+      <Picker selectedValue={calendarOption} onValueChange={(value) => setCalendarOption(value)}>
+        <Picker.Item label="Google Calendar" value="google" />
+        <Picker.Item label="Outlook Calendar" value="outlook" />
+        <Picker.Item label="iCal" value="ical" />
+      </Picker>
+      <CardField
+        postalCodeEnabled={true}
+        placeholder={{
+          number: '4242 4242 4242 4242',
+        }}
+        cardStyle={{
+          backgroundColor: '#FFFFFF',
+          textColor: '#000000',
+        }}
+        style={{
+          height: 50,
+          marginVertical: 30,
+        }}
+        onCardChange={(cardDetails) => setCardDetails(cardDetails)}
+      />
+      {loading ? (
+        <ActivityIndicator size="large" color="#0000ff" />
+      ) : (
+        <FlatList
+          data={slots}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => (
+            <View>
+              <Text>{item.date} - {item.time}</Text>
+              <Text>Location: {item.location}</Text>
+              <Text>Type: {item.type}</Text>
+              <Button title="Book" onPress={() => bookSlot(item.id, 5000, 'usd')} />
+            </View>
+          )}
+        />
+      )}
+    </View>
+  );
+};
+
+export default AppointmentBooking;
