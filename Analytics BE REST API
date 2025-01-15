@@ -1,0 +1,27 @@
+// Role-Based Analytics API
+router.get('/analytics/:role/:id', async (req, res) => {
+  const { role, id } = req.params;
+
+  const filter = role === 'individual' ? { userId: id } : { role };
+  const data = await AnalyticsData.find(filter).populate('userId', 'name');
+
+  res.status(200).json(data);
+});
+
+router.get('/analytics-summary/:role', async (req, res) => {
+  const { role } = req.params;
+
+  const summary = await AnalyticsData.aggregate([
+    { $match: { role } },
+    {
+      $group: {
+        _id: '$activityType',
+        totalDuration: { $sum: '$duration' },
+        totalCaloriesBurned: { $sum: '$caloriesBurned' },
+        totalDeviceUsage: { $sum: '$deviceUsage' },
+      },
+    },
+  ]);
+
+  res.status(200).json(summary);
+});
